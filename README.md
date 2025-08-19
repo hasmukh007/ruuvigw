@@ -16,7 +16,7 @@ sudo apt install python3-setuptools
 pip3 install influxdb==5.2.3 --break-system-packages
 
 apt install ansible git -y
-git clone https://github.com/ilatvala/ruuvigw.git
+git clone https://github.com/hasmukh007/ruuvigw.git
 cd ruuvigw/
 
 ansible-playbook -i "127.0.0.1," ruuvigw.yml
