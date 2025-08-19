@@ -1,6 +1,8 @@
 
 sudo su
+
 apt update
+
 apt upgrade
 
 wget https://download.java.net/java/ga/jdk11/openjdk-11_linux-x64_bin.tar.gz -O /tmp/openjdk-11+28_linux-x64_bin.tar.gz
