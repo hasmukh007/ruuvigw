@@ -1,0 +1,152 @@
+# usage: ansible-playbook -i "127.0.0.1," ruuvigw.yml
+- hosts: 127.0.0.1
+  connection: local
+  gather_facts: no
+  become: yes
+  become_user: root
+  vars:
+    influxdb_version: influxdb_1.8.10_armhf.deb
+    grafana_version: grafana_8.3.3_armhf.deb
+    database_name: ruuvi
+    ruuvinames: |
+      A67C075F95C6=Bedroom
+      FC20740F6709=Auto
+      D3739F4B97AA=Sauna
+    ruuviservice: |
+      [Unit]
+      Description=RuuviCollector Service
+      After=network.target
+      [Service]
+      ExecStartPre=/usr/bin/sleep 30
+      Type=simple
+      User=root
+      WorkingDirectory=/etc/RuuviCollector
+      ExecStart=/usr/bin/java -jar /etc/RuuviCollector/target/ruuvi-collector-0.2.jar
+      Restart=always
+      [Install]
+      WantedBy=multi-user.target
+  tasks:
+    - name: apt install needed packages
+      apt:
+        name:
+          - maven
+#          - openjdk-11-jdk
+          - adduser
+          - libfontconfig1
+          - bluetooth
+          - bluez
+          - bluez-hcidump
+          - python3-pip
+#          - python-setuptools
+          - nftables
+          - iptables-persistent
+          - sed
+        state: present
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install Influxdb and Grafana
+      apt:
+        deb: "{{ item }}"
+      loop:
+          - "https://dl.influxdata.com/influxdb/releases/{{ influxdb_version }}"
+          - "https://dl.grafana.com/grafana/release/12.1.1/grafana_12.1.1_16903967602_linux_arm64.deb"
+
+    - name: Enable and Start Influxdb
+      # systemd module not working correctly with armbian ansible
+      shell: "systemctl enable influxdb.service --now"
+
+#    - name: Prerequisite pip libraries
+#      pip: 
+#        name:
+#          - requests
+#          - influxdb==5.2.3 #5.3.0 was broken
+
+    - name: Create ruuvi database
+      influxdb_database:
+          hostname: "127.0.0.1"
+          database_name: "{{ database_name }}"
+          port: 8086
+          state: present
+
+#    - name: Enable and Start Grafana
+      # systemd module not working correctly with armbian ansible
+#      shell: "systemctl enable grafana-server.service --now"
+
+    - name: Check that Grafana API is fully running
+      wait_for:
+          port: 3000
+          delay: 30
+          
+    - name: Create ruuvi datasource
+      grafana_datasource:
+        name: Ruuvi
+        ds_type: influxdb
+        ds_url: http://localhost:8086
+        grafana_url: http://localhost:3000
+        database: "{{ database_name }}"
+        is_default: yes
+
+    - name: Install RuuviCollector
+      git:
+        repo: https://github.com/Scrin/RuuviCollector
+        dest: /etc/RuuviCollector
+
+    - name: Build RuuviCollector
+      shell: mvn clean package
+      args:
+        chdir: /etc/RuuviCollector
+
+    - name: Modify tools permissions
+      shell: "setcap 'cap_net_raw,cap_net_admin+eip' `which {{ item }}`"
+      loop:
+        - hcitool
+        - hcidump
+
+    - name: Copy example names config
+      copy:
+        dest: /etc/RuuviCollector/target/ruuvi-names.properties
+        content: "{{ ruuvinames }}"
+
+    - name: Copy example collector config
+      copy:
+        src: /etc/RuuviCollector/ruuvi-collector.properties.example
+        dest: /etc/RuuviCollector/target/ruuvi-collector.properties
+
+    - name: Make a service file for RuuviCollector
+      copy:
+        dest: /etc/systemd/system/ruuvicollector.service
+        content: "{{ ruuviservice }}"
+
+    - name: Enable and Start RuuviCollector service
+      # systemd module not working correctly with armbian ansible
+      shell: "systemctl enable ruuvicollector.service --now"
+
+    - name: Fetch Ruuvi dashboards
+      git:
+        repo: https://github.com/ruuvi/ruuvi.grafana-dashboards.json.git
+        dest: /etc/RuuviDashboards
+
+    - name: Direct 3000 port to 80
+      shell: "/sbin/iptables -t nat -I PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 3000"
+
+    - name: Save iptables
+      command: netfilter-persistent save
+
+    - name: Replace DB name for template
+      shell: "sed -i 's/${DS_RUUVI}/Ruuvi/g' '{{ item }}'"  
+      ignore_errors: yes
+      with_fileglob:
+        - "/etc/RuuviDashboards/*.json"
+
+    - name: Import ruuvi dashboards to Grafana
+      ignore_errors: yes
+      grafana_dashboard:
+        grafana_url: http://localhost:3000
+        state: present
+        commit_message: Ruuvi dashboards
+        overwrite: yes
+        path: "{{ item }}"
+      with_fileglob:
+        - "/etc/RuuviDashboards/*.json"
+
